@@ -1,0 +1,15 @@
+[package]
+name = "shader_abi"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+bytemuck = ["dep:bytemuck"]
+
+[dependencies]
+bytemuck = { version = "1.16.1", features = ["derive"], optional = true }
+
+[lints]
+workspace = true

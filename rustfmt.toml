@@ -1,0 +1,14 @@
+# See https://rust-lang.github.io/rustfmt for more information
+
+# Ensure lines end with \n even if the git configuration core.autocrlf is not set to true
+newline_style = "Unix"
+
+use_field_init_shorthand = true  # Foobar { foo, bar } instead of Foo { foo: foo, bar: bar }
+
+combine_control_expr = false
+
+imports_granularity = "Module"  # use foo::b::{f, g};
+group_imports = "StdExternalCrate"
+
+reorder_impl_items = true
+fn_call_width = 0

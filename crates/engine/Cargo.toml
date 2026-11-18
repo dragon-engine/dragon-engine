@@ -1,0 +1,29 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shader_abi = { path = "../shader_abi", features = ["bytemuck"] }
+winit.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+futures.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+pollster = "1.0.1"
+rapier3d = { version = "0.36.1", features = ["serde-serialize"] }
+slotmap = { version = "1.0", features = ["serde"] }
+async-executor = "1.14"
+async-channel = "2"
+event-listener = "5"
+pin-project-lite = "0.2"
+
+[build-dependencies]
+spirv-builder = "0.11.0"
+
+[lints]
+workspace = true
