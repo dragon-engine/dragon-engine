@@ -11,6 +11,8 @@
 ## Documentation
 
 - [Engine Architecture Principles](docs/engine-architecture.md): Core safety invariants, memory layout, dual executors, clocks, input pipeline, and UI abstraction.
+- [Graphics & Streaming Architecture](docs/graphics-architecture.md): Finalized 12-pass compute-centric clustered forward, unified hardware ray-query, and zero-loading-screen streaming specifications.
+- [Graphics Implementation Plan](docs/graphics-implementation-plan.md): Phased execution roadmap, codebase readiness audit, verification gates, and progress tracker.
 - [Project Agent Rules](AGENTS.md): Mandatory reactive architecture and crate boundary rules.
 
 ## Build and Test
