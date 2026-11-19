@@ -14,7 +14,7 @@ Apply this skill whenever you design, modify, or review modules inside `crates/e
 ## Verification Checklist
 
 1. **Privacy and Crate Independence:**
-   - Keep `TaskSlab`, `TaskHandle`, `SlotMap`, `SoaStorage`, `rapier3d` sets, and raw sync dependencies (`async-channel`, `event-listener`, `async-executor`) private inside `crates/engine`.
+   - Keep `TaskSlab`, `TaskHandle`, `SlotMap`, `SoaStorage`, `rapier3d` sets, Vulkan 1.3 handles (`ash`, `ash-window`, `gpu-allocator`), and raw sync dependencies (`async-channel`, `event-listener`, `async-executor`) private inside `crates/engine`. Keep `RenderEffect` declarative (`EffectShaderSpec`) and `UiRenderTarget` free of raw GPU handles.
    - Keep zero `tokio` dependencies and zero game-specific names, assets, or types in `crates/engine`.
    - Keep `crates/engine/shaders/core_shader` self-contained with `[workspace]`, and direct `SpirvBuilder` output to `OUT_DIR`. Never add WGSL shaders.
 

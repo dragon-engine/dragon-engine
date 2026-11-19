@@ -22,7 +22,7 @@ flowchart TD
     end
     SimStep --> Sync["GameApp::on_sync (SaveCodec I/O)"]
     SimStep --> Snap["Double-Buffered RenderSnapshot"]
-    Snap --> Render3D["rust-gpu Scene Pass (wgpu)"]
+    Snap --> Render3D["rust-gpu Scene Pass (Vulkan 1.3 / ash)"]
     Render3D --> UiSync["UiOverlay::sync + UiOverlay::render"]
 ```
 
@@ -31,7 +31,7 @@ flowchart TD
 - Enforce invariants through private modules and Rust types inside `engine` rather than relying on external `game` Cargo, Clippy, or CI rules.
 - Split the workspace into `engine` (runtime, clocks, executors, storage, physics, `rust-gpu` shaders, `UiOverlay` host) and `game` (gameplay scripts, UI views, modes, codecs).
 - `EngineRunner` owns the main loop and interacts with `game` only through `GameApp` (`init`, `world_scale`, `on_input`, `on_sync`, `build_snapshot`) and `UiOverlay`.
-- Keep `TaskSlab`, `TaskHandle`, `SlotMap`, SoA buffers, `rapier3d` sets, and raw sync crates (`async-channel`, `event-listener`, `async-executor`) private inside `engine`.
+- Keep `TaskSlab`, `TaskHandle`, `SlotMap`, SoA buffers, `rapier3d` sets, Vulkan 1.3 handles (`ash`, `ash-window`, `gpu-allocator`), and raw sync crates (`async-channel`, `event-listener`, `async-executor`) private inside `engine`.
 - Run async primitives only for game logic and engine systems, never for OS or filesystem I/O.
 
 ## 2. Hybrid Memory Layout and Physics Coupling

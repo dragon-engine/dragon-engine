@@ -32,7 +32,7 @@ State must contain only domain data. Control flow, transient input bookkeeping, 
    - While active, race a domain clock step (`ctx.sleep(WaitTimeout::WorldMs(16))`) against `signal.wait_until(...)` via `engine::select_biased!`.
 
 5. **Enforce engine safety and reusability boundaries:**
-   - Keep `crates/engine` strictly game-agnostic and self-contained (runtime, core `rust-gpu` shaders, `winit`/`wgpu` runner, physics, async primitives) so external `game` workspaces can reuse it without boilerplate.
+   - Keep `crates/engine` strictly game-agnostic and self-contained (runtime, core `rust-gpu` shaders, `winit`/Vulkan 1.3 `ash` runner, physics, async primitives) so external `game` workspaces can reuse it without boilerplate.
    - Keep `crates/game` as the feature-complete sample game without leaking game concepts into `crates/engine`.
    - Never hold AoS or `StateSignal` borrows across `.await`; use synchronous closures (`read_actor`, `write_actor`, `StateSignal::read`).
    - Revalidate `ActorId` handles (`Option`) after `.await` or background `spawn_compute` calls.

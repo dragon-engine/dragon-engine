@@ -6,6 +6,7 @@ use winit::window::Window;
 use crate::effect::EffectRegistry;
 use crate::gpu::GpuError;
 use crate::gpu::renderer::VulkanRenderer;
+use crate::runner::FramePacing;
 use crate::snapshot::RenderSnapshot;
 use crate::ui::UiOverlay;
 
@@ -18,9 +19,13 @@ impl Renderer {
         window: Arc<Window>,
         size: PhysicalSize<u32>,
         effects: EffectRegistry,
+        frame_pacing: FramePacing,
     ) -> Result<Self, GpuError> {
         let inner = VulkanRenderer::new(
-            window, size, effects,
+            window,
+            size,
+            effects,
+            frame_pacing,
         )?;
         Ok(Self { inner })
     }

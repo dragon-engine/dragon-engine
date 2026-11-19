@@ -1,6 +1,6 @@
 use std::fmt;
 use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
@@ -64,6 +64,18 @@ pub enum RenderSchedule {
     Parallel,
 }
 
+/// Controls swapchain presentation synchronization and CPU frame rate pacing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FramePacing {
+    /// Synchronizes presentation to the display refresh rate (`FIFO` / VSync).
+    VSync,
+    /// Caps rendering to at most the specified frames per second (`0` is clamped to `1`).
+    Capped(u32),
+    /// Renders and presents as fast as possible (`MAILBOX` preferred, `IMMEDIATE` fallback).
+    #[default]
+    Unlimited,
+}
+
 /// Window and runtime configuration for `EngineRunner`.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -71,6 +83,7 @@ pub struct EngineConfig {
     pub width: u32,
     pub height: u32,
     pub initial_schedule: RenderSchedule,
+    pub frame_pacing: FramePacing,
 }
 
 impl Default for EngineConfig {
@@ -80,6 +93,7 @@ impl Default for EngineConfig {
             width: 1280,
             height: 720,
             initial_schedule: RenderSchedule::Sequential,
+            frame_pacing: FramePacing::Unlimited,
         }
     }
 }
@@ -409,6 +423,8 @@ struct RunnerApp<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> {
     back_snapshot: RenderSnapshot<G::SnapshotData>,
     pending_inputs: InputBatch,
     last_frame: Instant,
+    frame_interval: Option<Duration>,
+    next_frame_deadline: Instant,
     focused: bool,
     cursor_grabbed: bool,
 }
@@ -451,13 +467,22 @@ impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> RunnerApp<G, U> {
 
     fn tick_and_render(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        let real_dt_ms = now
-            .saturating_duration_since(self.last_frame)
-            .as_millis()
-            .clamp(
-                1, 50,
-            ) as u64;
-        self.last_frame = now;
+        let elapsed = now.saturating_duration_since(self.last_frame);
+        let whole_ms = elapsed.as_millis();
+        let real_dt_ms = if whole_ms >= 50 {
+            self.last_frame = now;
+            50
+        } else {
+            let ms = whole_ms as u64;
+            // Advance `last_frame` only by whole consumed milliseconds so sub-millisecond frames accumulate accurately.
+            self.last_frame += Duration::from_millis(ms);
+            ms
+        };
+        if let Some(interval) = self.frame_interval {
+            let next = self.next_frame_deadline + interval;
+            // Reset deadline after hitches instead of scheduling catch-up bursts.
+            self.next_frame_deadline = if next <= now { now + interval } else { next };
+        }
 
         let batch = std::mem::take(&mut self.pending_inputs);
         let mut should_exit = false;
@@ -609,10 +634,14 @@ impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> ApplicationHandler fo
             Arc::clone(&window),
             size,
             effects,
+            self.config.frame_pacing,
         ) {
             Ok(renderer) => {
+                let now = Instant::now();
                 self.window = Some(window);
                 self.renderer = Some(renderer);
+                self.last_frame = now;
+                self.next_frame_deadline = now;
                 self.focused = true;
                 self.sync_cursor_grab();
             }
@@ -699,8 +728,19 @@ impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> ApplicationHandler fo
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if self.frame_interval.is_some() {
+            let now = Instant::now();
+            if now >= self.next_frame_deadline {
+                window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Poll);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_deadline));
+            }
+        } else {
             window.request_redraw();
         }
     }
@@ -777,8 +817,20 @@ impl EngineRunner {
             }
         };
 
+        let frame_interval = match config.frame_pacing {
+            FramePacing::Capped(fps) => {
+                Some(Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))))
+            }
+            FramePacing::VSync | FramePacing::Unlimited => None,
+        };
+        let now = Instant::now();
+
         let event_loop = EventLoop::new()?;
-        event_loop.set_control_flow(ControlFlow::Poll);
+        if frame_interval.is_some() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(now));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        }
 
         let mut app = RunnerApp {
             config,
@@ -792,7 +844,9 @@ impl EngineRunner {
             front_snapshot: front,
             back_snapshot: back,
             pending_inputs: InputBatch::default(),
-            last_frame: Instant::now(),
+            last_frame: now,
+            frame_interval,
+            next_frame_deadline: now,
             focused: false,
             cursor_grabbed: false,
         };

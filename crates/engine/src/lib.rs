@@ -25,7 +25,7 @@ pub use gpu::GpuError;
 pub use input::{GameInput, KeyTransition, MouseTransition};
 pub use modes::ModeManager;
 pub use physics::{Aabb3, ActorId, BodyKind, PhysicsCommand, RaycastHit, SpatialQuery};
-pub use runner::{EngineConfig, EngineError, EngineRunner, GameApp, RenderSchedule};
+pub use runner::{EngineConfig, EngineError, EngineRunner, FramePacing, GameApp, RenderSchedule};
 pub use save::{
     ActorCheckpoint, SaveCodec, TimerCheckpoint, WorldCheckpoint, read_checkpoint_file,
     write_checkpoint_file,

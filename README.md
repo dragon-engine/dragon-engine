@@ -1,6 +1,6 @@
 # Dragon Engine
 
-3D game engine and sample RPG workspace built in Rust with `wgpu`, `winit`, `rapier3d`, and `rust-gpu` SPIR-V shaders.
+3D game engine and sample RPG workspace built in Rust with Vulkan 1.3 (`ash` + `gpu-allocator`), `winit`, `rapier3d`, and `rust-gpu` SPIR-V shaders.
 
 ## Workspace Structure
 

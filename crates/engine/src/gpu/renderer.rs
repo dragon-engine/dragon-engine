@@ -12,6 +12,7 @@ use crate::gpu::scene_pipeline::{FRAMES_IN_FLIGHT, ScenePipeline};
 use crate::gpu::swapchain::VulkanSwapchain;
 use crate::gpu::ui_pipeline::UiPipeline;
 use crate::gpu::{GpuError, vk_err};
+use crate::runner::FramePacing;
 use crate::snapshot::RenderSnapshot;
 use crate::ui::{UiCompositor, UiOverlay, UiRenderTarget};
 
@@ -25,6 +26,7 @@ struct FrameSync {
 /// Private Vulkan 1.3 renderer owning device, swapchain, frame sync, scene pipeline, and UI pass.
 pub(crate) struct VulkanRenderer {
     window: Arc<Window>,
+    frame_pacing: FramePacing,
     frames: [FrameSync; FRAMES_IN_FLIGHT],
     // Per-swapchain-image present semaphores prevent reuse while an image is still presented.
     render_finished: Vec<vk::Semaphore>,
@@ -65,6 +67,7 @@ impl VulkanRenderer {
         window: Arc<Window>,
         size: PhysicalSize<u32>,
         effects: EffectRegistry,
+        frame_pacing: FramePacing,
     ) -> Result<Self, GpuError> {
         let (mut vk_dev, surface_loader, surface) = VulkanDevice::new_windowed(&window)?;
         let mut swapchain = VulkanSwapchain::new(
@@ -73,6 +76,7 @@ impl VulkanRenderer {
             surface,
             size.width,
             size.height,
+            frame_pacing,
         )?;
         let scene_pipeline = match ScenePipeline::new(
             &mut vk_dev,
@@ -109,6 +113,7 @@ impl VulkanRenderer {
         Ok(
             Self {
                 window,
+                frame_pacing,
                 frames,
                 render_finished,
                 frame_cursor: 0,
@@ -388,7 +393,11 @@ impl VulkanRenderer {
             return;
         }
 
-        self.window.pre_present_notify();
+        // Only register a compositor frame callback under VSync; on Wayland this throttles
+        // `RedrawRequested` to the display refresh rate even with MAILBOX or IMMEDIATE.
+        if self.frame_pacing == FramePacing::VSync {
+            self.window.pre_present_notify();
+        }
 
         let wait_semaphores = [render_finished];
         let swapchains = [self.swapchain.swapchain];

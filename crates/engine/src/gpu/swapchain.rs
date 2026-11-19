@@ -4,6 +4,14 @@ use ash::vk;
 
 use crate::gpu::device::VulkanDevice;
 use crate::gpu::{GpuError, vk_err};
+use crate::runner::FramePacing;
+
+struct SwapchainBuildSpec {
+    old_swapchain: vk::SwapchainKHR,
+    width: u32,
+    height: u32,
+    frame_pacing: FramePacing,
+}
 
 struct BuiltSwapchain {
     swapchain: vk::SwapchainKHR,
@@ -16,6 +24,7 @@ struct BuiltSwapchain {
 /// Private Vulkan swapchain and surface owner.
 /// Must be destroyed before `VulkanDevice` drops.
 pub(crate) struct VulkanSwapchain {
+    frame_pacing: FramePacing,
     surface_loader: ash::khr::surface::Instance,
     surface: vk::SurfaceKHR,
     pub(crate) swapchain_loader: ash::khr::swapchain::Device,
@@ -33,6 +42,7 @@ impl VulkanSwapchain {
         surface: vk::SurfaceKHR,
         width: u32,
         height: u32,
+        frame_pacing: FramePacing,
     ) -> Result<Self, GpuError> {
         let swapchain_loader = ash::khr::swapchain::Device::new(
             &vk_dev.instance,
@@ -43,12 +53,16 @@ impl VulkanSwapchain {
             &surface_loader,
             surface,
             &swapchain_loader,
-            vk::SwapchainKHR::null(),
-            width,
-            height,
+            SwapchainBuildSpec {
+                old_swapchain: vk::SwapchainKHR::null(),
+                width,
+                height,
+                frame_pacing,
+            },
         )?;
         Ok(
             Self {
+                frame_pacing,
                 surface_loader,
                 surface,
                 swapchain_loader,
@@ -74,9 +88,12 @@ impl VulkanSwapchain {
             &self.surface_loader,
             self.surface,
             &self.swapchain_loader,
-            old_swapchain,
-            width,
-            height,
+            SwapchainBuildSpec {
+                old_swapchain,
+                width,
+                height,
+                frame_pacing: self.frame_pacing,
+            },
         )?;
 
         for view in self.image_views.drain(..) {
@@ -142,9 +159,7 @@ fn build_swapchain(
     surface_loader: &ash::khr::surface::Instance,
     surface: vk::SurfaceKHR,
     swapchain_loader: &ash::khr::swapchain::Device,
-    old_swapchain: vk::SwapchainKHR,
-    width: u32,
-    height: u32,
+    spec: SwapchainBuildSpec,
 ) -> Result<BuiltSwapchain, GpuError> {
     // SAFETY: `physical_device` and `surface` are valid.
     let caps = unsafe {
@@ -214,11 +229,10 @@ fn build_swapchain(
                 },
             )?
     };
-    let present_mode = if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
-        vk::PresentModeKHR::MAILBOX
-    } else {
-        vk::PresentModeKHR::FIFO
-    };
+    let present_mode = select_present_mode(
+        &present_modes,
+        spec.frame_pacing,
+    );
 
     let extent = if caps.current_extent.width != u32::MAX && caps.current_extent.height != u32::MAX
     {
@@ -228,11 +242,11 @@ fn build_swapchain(
         }
     } else {
         vk::Extent2D {
-            width: width.max(1).clamp(
+            width: spec.width.max(1).clamp(
                 caps.min_image_extent.width.max(1),
                 caps.max_image_extent.width.max(1),
             ),
-            height: height.max(1).clamp(
+            height: spec.height.max(1).clamp(
                 caps.min_image_extent.height.max(1),
                 caps.max_image_extent.height.max(1),
             ),
@@ -257,7 +271,7 @@ fn build_swapchain(
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
         .present_mode(present_mode)
         .clipped(true)
-        .old_swapchain(old_swapchain);
+        .old_swapchain(spec.old_swapchain);
 
     // SAFETY: `create_info` uses capabilities and formats queried from this surface/device.
     let swapchain = unsafe {
@@ -344,4 +358,77 @@ fn build_swapchain(
             image_views,
         },
     )
+}
+
+fn select_present_mode(
+    present_modes: &[vk::PresentModeKHR],
+    frame_pacing: FramePacing,
+) -> vk::PresentModeKHR {
+    match frame_pacing {
+        FramePacing::VSync => vk::PresentModeKHR::FIFO,
+        FramePacing::Capped(_) | FramePacing::Unlimited => {
+            if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                vk::PresentModeKHR::MAILBOX
+            } else if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+                vk::PresentModeKHR::IMMEDIATE
+            } else {
+                vk::PresentModeKHR::FIFO
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vsync_always_selects_fifo() {
+        let modes = [
+            vk::PresentModeKHR::IMMEDIATE,
+            vk::PresentModeKHR::MAILBOX,
+            vk::PresentModeKHR::FIFO,
+        ];
+        assert_eq!(
+            select_present_mode(
+                &modes,
+                FramePacing::VSync,
+            ),
+            vk::PresentModeKHR::FIFO
+        );
+    }
+
+    #[test]
+    fn unlimited_and_capped_prefer_mailbox_then_immediate_then_fifo() {
+        let with_mailbox = [
+            vk::PresentModeKHR::FIFO,
+            vk::PresentModeKHR::IMMEDIATE,
+            vk::PresentModeKHR::MAILBOX,
+        ];
+        let without_mailbox = [vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE];
+        let fifo_only = [vk::PresentModeKHR::FIFO];
+
+        for pacing in [FramePacing::Unlimited, FramePacing::Capped(144)] {
+            assert_eq!(
+                select_present_mode(
+                    &with_mailbox,
+                    pacing,
+                ),
+                vk::PresentModeKHR::MAILBOX
+            );
+            assert_eq!(
+                select_present_mode(
+                    &without_mailbox,
+                    pacing,
+                ),
+                vk::PresentModeKHR::IMMEDIATE
+            );
+            assert_eq!(
+                select_present_mode(
+                    &fifo_only, pacing,
+                ),
+                vk::PresentModeKHR::FIFO
+            );
+        }
+    }
 }
