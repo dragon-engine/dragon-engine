@@ -3,10 +3,10 @@
 mod clock;
 mod effect;
 mod executor;
+mod gpu;
 mod input;
 mod modes;
 mod physics;
-mod render_pipeline;
 mod renderer;
 mod runner;
 mod save;
@@ -17,14 +17,15 @@ mod world;
 
 pub use clock::ClockDomain;
 pub use effect::{
-    EffectAttachment, EffectDrawItem, EffectId, EffectInitContext, EffectRegistry, RenderEffect,
+    EffectAttachment, EffectBlendMode, EffectId, EffectRegistry, EffectShaderSpec, RenderEffect,
 };
 pub use executor::ComputeTask;
 pub use futures::{join, select_biased};
+pub use gpu::GpuError;
 pub use input::{GameInput, KeyTransition, MouseTransition};
 pub use modes::ModeManager;
 pub use physics::{Aabb3, ActorId, BodyKind, PhysicsCommand, RaycastHit, SpatialQuery};
-pub use runner::{EngineConfig, EngineRunner, GameApp, RenderSchedule};
+pub use runner::{EngineConfig, EngineError, EngineRunner, GameApp, RenderSchedule};
 pub use save::{
     ActorCheckpoint, SaveCodec, TimerCheckpoint, WorldCheckpoint, read_checkpoint_file,
     write_checkpoint_file,
@@ -33,8 +34,13 @@ pub use shader_abi;
 pub use snapshot::{CameraSnapshot, GizmoBox, RenderMesh, RenderSnapshot};
 pub use sync::{ActionReceiver, ActionSender, StateSignal, WaitError, WaitTimeout};
 pub use ui::{UiBlitter, UiOverlay, UiRenderTarget};
-pub use wgpu;
 pub use winit;
+
+/// Validates an external `RenderEffect` SPIR-V shader against `engine`'s Vulkan 1.3 pipeline ABI.
+pub fn validate_effect_shader_vulkan(spec: EffectShaderSpec) -> Result<(), GpuError> {
+    gpu::scene_pipeline::validate_effect_shader_headless(spec)
+}
+
 pub fn init_tracing() {
     if let Err(e) = tracing_subscriber::fmt::try_init() {
         tracing::debug!("Tracing subscriber already initialized: {e}");
@@ -520,21 +526,14 @@ mod tests {
     fn mesh_effect_attachment_updates_render_snapshot_and_checkpoints() {
         struct DummyEffect;
         impl RenderEffect for DummyEffect {
-            fn init(&mut self, _ctx: &EffectInitContext<'_>) {}
-
-            fn prepare(
-                &mut self,
-                _device: &wgpu::Device,
-                _queue: &wgpu::Queue,
-                _items: &[EffectDrawItem],
-            ) {
-            }
-
-            fn draw<'pass>(
-                &'pass self,
-                _pass: &mut wgpu::RenderPass<'pass>,
-                _items: &[EffectDrawItem],
-            ) {
+            fn shader_spec(&self) -> EffectShaderSpec {
+                EffectShaderSpec {
+                    label: "Dummy Effect",
+                    spirv_bytes: include_bytes!(env!("CORE_SHADER_SPV")),
+                    vertex_entry: "vs_main",
+                    fragment_entry: "fs_main",
+                    blend: EffectBlendMode::AlphaBlend,
+                }
             }
         }
 
@@ -599,5 +598,18 @@ mod tests {
             checkpoints[0].effect,
             Some(attachment)
         );
+    }
+
+    #[test]
+    fn core_shader_compiles_on_vulkan_1_3() {
+        let spec = EffectShaderSpec {
+            label: "Core Scene Shader",
+            spirv_bytes: include_bytes!(env!("CORE_SHADER_SPV")),
+            vertex_entry: "vs_main",
+            fragment_entry: "fs_main",
+            blend: EffectBlendMode::Opaque,
+        };
+        validate_effect_shader_vulkan(spec)
+            .expect("core_shader SPIR-V must compile into a Vulkan 1.3 pipeline");
     }
 }

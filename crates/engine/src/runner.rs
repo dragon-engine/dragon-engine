@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
@@ -10,12 +11,49 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::effect::EffectRegistry;
 use crate::executor::{TaskSlab, advance_clocks_and_timers};
+use crate::gpu::GpuError;
 use crate::input::{GameInput, InputBatch, KeyTransition, MouseTransition};
 use crate::renderer::Renderer;
 use crate::snapshot::{CameraSnapshot, GizmoBox, RenderSnapshot};
 use crate::sync::{ActionSender, action_channel};
 use crate::ui::UiOverlay;
 use crate::world::{EngineContext, InputContext, SyncContext, WorldReadView, WorldState};
+
+/// Typed startup and runtime error returned by `EngineRunner::run` and `run_with_effects`.
+#[derive(Debug)]
+pub enum EngineError {
+    EventLoop(EventLoopError),
+    Gpu(GpuError),
+}
+
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EventLoop(err) => write!(
+                f,
+                "Event loop error: {err}"
+            ),
+            Self::Gpu(err) => write!(
+                f,
+                "Graphics startup error: {err}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+impl From<EventLoopError> for EngineError {
+    fn from(err: EventLoopError) -> Self {
+        Self::EventLoop(err)
+    }
+}
+
+impl From<GpuError> for EngineError {
+    fn from(err: GpuError) -> Self {
+        Self::Gpu(err)
+    }
+}
 
 /// Controls whether simulation and rendering execute sequentially or overlapped across frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,11 +396,12 @@ enum SimMode<G: GameApp> {
     Transitioning,
 }
 
-struct RunnerApp<'a, G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> {
+struct RunnerApp<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> {
     config: EngineConfig,
     pending_effects: Option<EffectRegistry>,
     window: Option<Arc<Window>>,
-    renderer: Option<Renderer<'a>>,
+    renderer: Option<Renderer>,
+    startup_error: Option<GpuError>,
     ui: U,
     action_sender: ActionSender<G::Action>,
     sim: SimMode<G>,
@@ -374,7 +413,7 @@ struct RunnerApp<'a, G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> {
     cursor_grabbed: bool,
 }
 
-impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> RunnerApp<'_, G, U> {
+impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> RunnerApp<G, U> {
     fn sync_cursor_grab(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
@@ -538,11 +577,9 @@ impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> RunnerApp<'_, G, U> {
     }
 }
 
-impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> ApplicationHandler
-    for RunnerApp<'_, G, U>
-{
+impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> ApplicationHandler for RunnerApp<G, U> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if self.window.is_some() || self.startup_error.is_some() {
             return;
         }
         let attrs = Window::default_attributes()
@@ -554,23 +591,40 @@ impl<G: GameApp, U: UiOverlay<G::SnapshotData, G::Action>> ApplicationHandler
                 ),
             );
 
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .unwrap_or_else(|e| panic!("Failed to create window: {e}")),
-        );
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => Arc::new(window),
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    "Failed to create window"
+                );
+                self.startup_error = Some(GpuError::WindowHandle(err.to_string()));
+                event_loop.exit();
+                return;
+            }
+        };
         let size = window.inner_size();
         let effects = self.pending_effects.take().unwrap_or_default();
-        let renderer = Renderer::new(
+        match Renderer::new(
             Arc::clone(&window),
             size,
             effects,
-        );
-
-        self.window = Some(window);
-        self.renderer = Some(renderer);
-        self.focused = true;
-        self.sync_cursor_grab();
+        ) {
+            Ok(renderer) => {
+                self.window = Some(window);
+                self.renderer = Some(renderer);
+                self.focused = true;
+                self.sync_cursor_grab();
+            }
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    "Vulkan renderer initialization failed"
+                );
+                self.startup_error = Some(err);
+                event_loop.exit();
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -666,7 +720,7 @@ pub struct EngineRunner;
 
 impl EngineRunner {
     /// Starts the `winit` event loop and drives `GameApp` and `UiOverlay` with no extra effects.
-    pub fn run<G, U>(config: EngineConfig, game: G, ui: U) -> Result<(), EventLoopError>
+    pub fn run<G, U>(config: EngineConfig, game: G, ui: U) -> Result<(), EngineError>
     where
         G: GameApp,
         U: UiOverlay<G::SnapshotData, G::Action>,
@@ -685,7 +739,7 @@ impl EngineRunner {
         effects: EffectRegistry,
         game: G,
         ui: U,
-    ) -> Result<(), EventLoopError>
+    ) -> Result<(), EngineError>
     where
         G: GameApp,
         U: UiOverlay<G::SnapshotData, G::Action>,
@@ -731,6 +785,7 @@ impl EngineRunner {
             pending_effects: Some(effects),
             window: None,
             renderer: None,
+            startup_error: None,
             ui,
             action_sender,
             sim,
@@ -742,6 +797,10 @@ impl EngineRunner {
             cursor_grabbed: false,
         };
 
-        event_loop.run_app(&mut app)
+        event_loop.run_app(&mut app)?;
+        if let Some(err) = app.startup_error {
+            return Err(EngineError::Gpu(err));
+        }
+        Ok(())
     }
 }

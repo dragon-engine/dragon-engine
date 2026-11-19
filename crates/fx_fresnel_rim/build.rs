@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut builder = SpirvBuilder::new(
         shader_dir,
-        "spirv-unknown-vulkan1.1",
+        "spirv-unknown-vulkan1.3",
     )
     .target_dir_path(out_dir.join("spirv-builder"));
     builder.build_script.defaults = true;

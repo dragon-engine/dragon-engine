@@ -20,32 +20,36 @@ pub struct EffectAttachment {
     pub params: [[f32; 4]; 2],
 }
 
-/// Shared GPU resources provided by `engine` when initializing a `RenderEffect`.
-pub struct EffectInitContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub scene_bind_group_layout: &'a wgpu::BindGroupLayout,
-    pub vertex_layout: wgpu::VertexBufferLayout<'static>,
-    pub target_format: wgpu::TextureFormat,
-    pub depth_format: wgpu::TextureFormat,
+/// Blending behavior applied when `engine` composites a `RenderEffect` pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectBlendMode {
+    Opaque,
+    AlphaBlend,
+    Additive,
+}
+
+/// Declarative SPIR-V shader specification supplied by a pluggable `RenderEffect`.
+/// Keeps graphics API handles and `unsafe` code private inside `crates/engine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectShaderSpec {
+    pub label: &'static str,
+    pub spirv_bytes: &'static [u8],
+    pub vertex_entry: &'static str,
+    pub fragment_entry: &'static str,
+    pub blend: EffectBlendMode,
 }
 
 /// One mesh draw range with its attached opaque effect parameters.
 #[derive(Debug, Clone)]
-pub struct EffectDrawItem {
-    pub vertex_range: Range<u32>,
-    pub params: [[f32; 4]; 2],
+pub(crate) struct EffectDrawItem {
+    pub(crate) vertex_range: Range<u32>,
+    pub(crate) params: [[f32; 4]; 2],
 }
 
 /// Pluggable 3D overlay effect interface implemented by standard or external effect crates.
 pub trait RenderEffect: Send + 'static {
-    /// Initializes GPU shaders, bind group layouts, and render pipelines against `engine`'s ABI.
-    fn init(&mut self, ctx: &EffectInitContext<'_>);
-
-    /// Uploads per-frame uniform data for all meshes currently using this effect.
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, items: &[EffectDrawItem]);
-
-    /// Issues draw calls inside the active scene render pass (`@group(0)` and vertex buffer 0 are bound).
-    fn draw<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>, items: &[EffectDrawItem]);
+    /// Returns the compiled `rust-gpu` SPIR-V module and pipeline state for this effect.
+    fn shader_spec(&self) -> EffectShaderSpec;
 }
 
 /// Registry passed to `EngineRunner::run_with_effects` to attach workspace or third-party effects.
