@@ -42,6 +42,17 @@ impl Renderer<'_> {
         )
         .unwrap_or_else(|e| panic!("Failed to find suitable GPU adapter: {e}"));
 
+        // TODO(wgpu): `wgpu 30.0.1` does not implement incremental BLAS/TLAS refit for
+        // `AccelerationStructureUpdateMode::PreferUpdate` and `AccelerationStructureFlags::ALLOW_UPDATE`;
+        // `wgpu-core` always performs a full rebuild. Set `ALLOW_UPDATE | PREFER_FAST_BUILD` and
+        // `PreferUpdate` on dynamic BLASes, and cap dynamic ray-traced characters until upstream refit lands:
+        // https://github.com/gfx-rs/wgpu/issues/6762
+        //
+        // TODO(wgpu): `wgpu::Blas` does not expose allocated or compacted byte sizes (`size_info` is
+        // private inside `wgpu-core`). Track `BLAS_POOL_BUDGET_MB` with a CPU triangle-count estimator
+        // inside a private `BlasPool` module until `wgpu` exposes BLAS memory queries:
+        // https://github.com/gfx-rs/wgpu/issues/6762
+        // https://github.com/gfx-rs/wgpu/pull/7285
         let (device, queue) = pollster::block_on(
             adapter.request_device(
                 &wgpu::DeviceDescriptor {

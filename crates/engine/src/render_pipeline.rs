@@ -45,6 +45,14 @@ impl SceneRenderPipeline {
             },
         );
 
+        // TODO(wgpu): `wgpu 30.0.1` has no in-place bindless descriptor mutation (`ResourceTable` or
+        // `BindGroup::update_bindings`), so mip streaming must rebuild the bindless `BindGroup`.
+        // Isolate bindless slot management inside one private `BindlessTextureTable`, cap active slots,
+        // and coalesce rebuilds until upstream mutable bindless lands:
+        // https://github.com/gfx-rs/wgpu/issues/8557
+        // https://github.com/gfx-rs/wgpu/pull/9853
+        // https://github.com/gpuweb/gpuweb/issues/5372
+        // https://github.com/gfx-rs/wgpu/issues/3637
         let scene_bind_group_layout = device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {

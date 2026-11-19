@@ -10,6 +10,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out_dir =
         PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR environment variable missing")?);
 
+    // TODO(wgpu): `wgpu-core 30.0.1` rejects DXIL passthrough shader modules when
+    // `entry_points.len() != 1` (`IncorrectPassthroughEntryPointCount`). When adding Phase 7 DX12
+    // passthrough packaging, emit one DXIL module per entry point instead of one multi-entry blob:
+    // https://github.com/gfx-rs/wgpu/issues/9991
     let mut builder = SpirvBuilder::new(
         shader_dir,
         "spirv-unknown-vulkan1.1",

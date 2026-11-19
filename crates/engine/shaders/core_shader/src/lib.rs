@@ -1,5 +1,12 @@
 #![no_std]
 
+// TODO(wgpu): `wgpu-hal 30.0.1` does not enable Vulkan `runtime_descriptor_array`, so unsized
+// `spirv_std::RuntimeArray<Image!(...)>` descriptor bindings fail Vulkan validation under
+// `PASSTHROUGH_SHADERS`. Use a fixed-size `[Image!(...); N]` array matching
+// `BindGroupLayoutEntry::count` behind one centralized texture-sampling helper:
+// https://github.com/gfx-rs/wgpu/issues/7347
+// https://github.com/gfx-rs/wgpu/issues/3637
+
 use shader_abi::SceneUniforms;
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4};
 use spirv_std::image::Image2d;

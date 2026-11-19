@@ -8,7 +8,7 @@ This document defines the phased implementation plan for realizing [Architectura
 
 These decisions are final and must not be reopened during implementation without an explicit Blueprint review:
 
-1. **Linux/Vulkan-First Rollout:** Target native **Vulkan** (Linux first, plus Windows Vulkan) across Phases 0 to 5 using `rust-gpu` SPIR-V passthrough. Defer DX12 and Metal cross-backend support (offline SPIRV-Cross + DXC/MetalLib compilation, Metal dummy-padded bindless slots, Metal mesh-shader draw path) to Phase 7's dedicated cross-backend milestone.
+1. **Linux/Vulkan-First Rollout:** Target native **Vulkan** (Linux first, plus Windows Vulkan) across Phases 0 to 5 using `rust-gpu` SPIR-V passthrough. Defer DX12 and Metal cross-backend support (offline SPIRV-Cross + DXC/MetalLib compilation emitting one DXIL module per entry point per https://github.com/gfx-rs/wgpu/issues/9991, defensive 1x1 dummy bindless fallback for adapters without `PARTIALLY_BOUND_BINDING_ARRAY`, Metal mesh-shader draw path) to Phase 7's dedicated cross-backend milestone.
 2. **Strict 100% `rust-gpu`, Zero WGSL (with Pluggable Custom Shaders):** All engine-authored and game-authored compute, mesh, ray-query, graphics, and pluggable `RenderEffect` shaders live in `crates/engine/shaders/core_shader` and external `rust-gpu` crates (such as `crates/fx_fresnel_rim`) compiled into Cargo `OUT_DIR`. Use `spirv-std 0.11.0`'s native `RayQuery`, `GL_KHR_shader_subgroup`, `NonUniform`, and `TaskEXT`/`MeshEXT` APIs (inline SPIR-V `asm!` only if an edge-case intrinsic is absent). The only permitted non-`rust-gpu` binary exception is an optional feature-gated (`fsr-sdk`) official AMD FSR SDK 2.4.0 DLL on Windows (never GPL/patched override mods).
 3. **Minimal Scoped `unsafe`:** Keep `unsafe_code = "deny"` in root `Cargo.toml`. Allow `#[allow(unsafe_code)]` strictly inside minimal private boundaries with no safe alternative:
    - `crates/engine/src/gpu/device.rs` (`wgpu::ExperimentalFeatures` and SPIR-V/passthrough shader creation),
@@ -17,7 +17,7 @@ These decisions are final and must not be reopened during implementation without
 4. **Zero-Loading-Screen Async Pop-In (Frame-Pacing First):** Never stall simulation or rendering on disk I/O, decompression, GPU upload, BLAS build/compaction, or physics splicing. Accept visible asynchronous pop-in over frame-rate stutter.
 5. **Independent Per-Subsystem Residency Policies:** Physics, Geometry/LOD, Ray-Tracing BLAS, Actors/AI, and GPU-Feedback Mipmap Streaming each own independent spatial residency policies and scaling parameters (no coupled monolithic sector rings).
 6. **Lightweight Streaming Pacing (No Runtime Millisecond Timers):** Use only a fixed-size Pass 1 staging ring (`STAGING_RING_MB`), a runtime-preset per-frame static BLAS build cap (`STATIC_BLAS_BUILDS_PER_FRAME`), and explicit pool/VRAM budgets (`STATIC_GEOMETRY_ARENA_MB`, `BLAS_POOL_BUDGET_MB`, `TEXTURE_STREAM_BUDGET_MB`). Millisecond figures are design-time references and offline QA profiler targets (calibrated to the target discrete desktop GPU tier), never runtime timers.
-7. **Zero-Lag Pass 2 / Pass 3 Ordering:** Execute **Pass 2 (Compute Meshlet Skinning)** before **Pass 3 (Dynamic BLAS Refit, Async Static `wgpu::Blas` Compaction, and Active-Radius TLAS Rebuild)** so rasterization and hardware ray queries consume identical Frame N character geometry, while Pass 2 retains previous-frame skinned positions for Pass 4 motion vectors.
+7. **Zero-Lag Pass 2 / Pass 3 Ordering:** Execute **Pass 2 (Compute Meshlet Skinning)** before **Pass 3 (Dynamic BLAS Update/Rebuild, Async Static `wgpu::Blas` Compaction, and Active-Radius TLAS Rebuild)** so rasterization and hardware ray queries consume identical Frame N character geometry, while Pass 2 retains previous-frame skinned positions for Pass 4 motion vectors. Under `wgpu 30.0.1`, Pass 3 sets `ALLOW_UPDATE | PREFER_FAST_BUILD` and `PreferUpdate` (executing fast rebuilds until upstream refit lands: https://github.com/gfx-rs/wgpu/issues/6762).
 8. **Zero Runtime PSO Stutter:** Precompile all fixed bindless compute, mesh, and render pipelines (including registered `RenderEffect` pipelines) once at startup.
 
 ---
@@ -76,15 +76,17 @@ dragon-engine/
 - **Deliverables:**
   1. **Pure `rust-gpu 0.11.0` Vulkan Capability Spike & Build Upgrade (`crates/engine/build.rs`, `core_shader`):**
      - Upgrade `SpirvBuilder` target to `spirv-unknown-vulkan1.3` with required SPIR-V capabilities.
-     - Verify pure `rust-gpu` compilation and `wgpu 30.0.1` Vulkan pipeline creation using `spirv-std 0.11.0`'s native APIs for subgroups (`GL_KHR_shader_subgroup`), `NonUniform` bindless texture arrays, `wgpu` Immediates (`Features::IMMEDIATES`, `<= 128 B`), `RayQuery`, and `TaskEXT`/`MeshEXT` mesh shaders via `PASSTHROUGH_SHADERS`.
+     - Verify pure `rust-gpu` compilation and `wgpu 30.0.1` Vulkan pipeline creation using `spirv-std 0.11.0`'s native APIs for subgroups (`GL_KHR_shader_subgroup`), fixed-size `[Image!(...); N]` `NonUniform` bindless texture arrays (not unsized `RuntimeArray`, as `wgpu-hal 30.0.1` does not enable Vulkan `runtime_descriptor_array`: https://github.com/gfx-rs/wgpu/issues/7347, https://github.com/gfx-rs/wgpu/issues/3637), `wgpu` Immediates (`Features::IMMEDIATES`, `<= 128 B`), `RayQuery` (including non-opaque candidate-intersection alpha-test traversal), and `TaskEXT`/`MeshEXT` mesh shaders via `PASSTHROUGH_SHADERS`.
+     - Benchmark `Device::create_bind_group` CPU cost at `2,048` and `4,096` bindless texture slots to size coalesced rebuild pacing (https://github.com/gfx-rs/wgpu/issues/8557).
   2. **Device Capability Probe & Dynamic Runtime Presets (`crates/engine/src/gpu/device.rs`, `config.rs`):**
-     - Isolate `#[allow(unsafe_code)]` for `wgpu::ExperimentalFeatures` and SPIR-V passthrough creation inside `gpu/device.rs`.
-     - Auto-select runtime preset (`Radeon780M`, `Radeon890M`, `DiscreteDesktop`, `HighEnd4K`) including per-preset VRAM budgets (`STATIC_GEOMETRY_ARENA_MB`, `BLAS_POOL_BUDGET_MB`, `TEXTURE_STREAM_BUDGET_MB`); clamp bindless counts to `adapter.limits()`; expose `VisualStyle` (`Realistic` | `Comic`) and `UpscalerBackend` (`TaauRcas` default).
-  3. **Memory Pools, Static Geometry Arena, Budgeted `wgpu::Blas` Pool & Parallel Encoders (`crates/engine/src/gpu/`):**
-     - Implement triple-buffered dynamic pools, TLSF/free-list sub-allocated static geometry arena, budgeted `wgpu::Blas` pool tracker (using safe `Device::create_blas` / `Queue::compact_blas`), fixed Pass 1 upload staging ring (`STAGING_RING_MB`), triple-buffered `MAP_READ` mipmap-feedback staging ring, and N+3 deferred reclamation queue.
-     - Implement worker-thread `CommandEncoder` recording pool with explicit disjoint thread-pool roles under `RenderSchedule::Parallel`.
+     - Isolate `#[allow(unsafe_code)]` for `wgpu::ExperimentalFeatures` and SPIR-V passthrough creation inside `gpu/device.rs`; return a typed startup error from `EngineRunner::run` when a host lacks Vulkan 1.3 or `EXPERIMENTAL_RAY_QUERY`.
+     - Request `TEXTURE_COMPRESSION_BC`, `DEPTH_CLIP_CONTROL`, `TEXTURE_BINDING_ARRAY`, `SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`, `PARTIALLY_BOUND_BINDING_ARRAY` (where supported), `IMMEDIATES`, `MULTI_DRAW_INDIRECT_COUNT`, `SUBGROUP`, `EXPERIMENTAL_MESH_SHADER`, `EXPERIMENTAL_RAY_QUERY`, `PASSTHROUGH_SHADERS`, and `TIMESTAMP_QUERY`, alongside `Limits::using_minimum_supported_acceleration_structure_values()`, `using_recommended_minimum_mesh_shader_values()`, `max_immediate_size = 128`, and clamped `max_binding_array_elements_per_shader_stage`.
+     - Auto-select runtime preset (`Radeon780M` at 30 FPS floor, `Radeon890M` at 60 FPS, `DiscreteDesktop` at 100+ FPS, `HighEnd4K` at 90+ FPS) including per-preset VRAM budgets (`STATIC_GEOMETRY_ARENA_MB`, `BLAS_POOL_BUDGET_MB`, `TEXTURE_STREAM_BUDGET_MB`) and `MAX_DYNAMIC_BLAS_COUNT`; expose `VisualStyle` (`Realistic` | `Comic`) and `UpscalerBackend` (`TaauRcas` default).
+  3. **Memory Pools, Static Geometry Arena, Budgeted `BlasPool` & Parallel Encoders (`crates/engine/src/gpu/`):**
+     - Implement triple-buffered dynamic pools, TLSF/free-list sub-allocated static geometry arena (retaining flat BLAS triangle-index slices alongside meshlet buffers), private `BlasPool` tracker using a deterministic CPU triangle-count byte estimator (`wgpu::Blas` hides byte size: https://github.com/gfx-rs/wgpu/issues/6762, https://github.com/gfx-rs/wgpu/pull/7285; uses safe `Device::create_blas` / `Queue::compact_blas`), fixed Pass 1 upload staging ring (`STAGING_RING_MB`), triple-buffered `MAP_READ` mipmap-feedback staging ring, and N+3 deferred reclamation queue.
+     - Implement worker-thread `CommandEncoder` recording pool scoped to independent render-graph stages (Pass 3 BVH, Pass 4 Far Sun Cascade, Pass 4 Thin Prepass) with explicit disjoint thread-pool roles under `RenderSchedule::Parallel`.
   4. **Shared ABI Expansion (`crates/shader_abi/src/lib.rs`):**
-     - Define `FrameConstants`, `ImmediateConstants` (`<= 128 B`), `GpuLight` (`32 B`), `ClusterHeader` (`8 B`), `MeshletDesc`, `GpuInstance` (including `EffectAttachment` parameters and geometry/material offsets for Pass 7 ray-hit shading), `GpuMaterial`, `HighlightCategory`, and compressed bone transform structs.
+     - Define `FrameConstants`, `ImmediateConstants` (`<= 128 B`), `GpuLight` (`32 B`), `ClusterHeader` (`8 B`), `MeshletDesc`, `GpuSubmeshDesc` (mapping `(instance_custom_index, geometry_index)` to flat BLAS vertex/index slices and `MaterialId` for Pass 7 ray-hit shading), `GpuInstance` (including `EffectAttachment` parameters and submesh range), `GpuMaterial`, `HighlightCategory`, and compressed bone transform structs.
 - **Verification Gate:**
   - **Software-safe CI:** `cargo clippy --workspace --all-targets -- -D warnings`, `shader_abi` byte-size/alignment tests, preset/arena/pool/N+3 unit tests.
   - **Hardware-RT Vulkan test (tagged `#[ignore]` or feature-gated for non-RT CI):** Headless `wgpu` Vulkan validation of adapter probing, `IMMEDIATES`, `SUBGROUP`, `EXPERIMENTAL_RAY_QUERY`, `EXPERIMENTAL_MESH_SHADER`, and `rust-gpu` SPIR-V passthrough pipeline creation.
@@ -105,7 +107,7 @@ dragon-engine/
      - Run all `mmap` page reads, KTX2 mip reads, and collider deserialization on a private OS I/O thread pool (zero I/O in `TaskSlab` or render thread) with instant stale-request cancellation and lock-free handoff compatible with `RenderSchedule::Parallel`.
   3. **Device-Independent Handle Registry & Independent Residency Coordinators (`crates/engine/src/assets/`):**
      - Expose opaque handles (`MeshHandle`, `MaterialHandle`, `TextureHandle`, `SkeletonHandle`, `FontHandle`).
-     - Implement independent residency policies for Physics (`PHYSICS_ACTIVE_RADIUS_M`), Geometry/LOD (`CAMERA_FAR_M`), Ray-Tracing BLAS (`TLAS_ACTIVE_RADIUS_M + BLAS_PREFETCH_MARGIN_M`), Actors (`SIM_ACTIVE_RADIUS_M`), and Bindless Mipmap Feedback (`TEXTURE_STREAM_BUDGET_MB`, generational slots, immutable mip-chain `wgpu::Texture` swap, once-per-frame batched bindless `BindGroup` rebuild, atomic `min_lod` clamp, N+3 deferred texture drop, and `MAP_READ` feedback drain).
+     - Implement independent residency policies for Physics (`PHYSICS_ACTIVE_RADIUS_M`), Geometry/LOD (`CAMERA_FAR_M`), Actors (`SIM_ACTIVE_RADIUS_M`), plus CPU-side residency state machines and unit tests for Ray-Tracing BLAS (`TLAS_ACTIVE_RADIUS_M + BLAS_PREFETCH_MARGIN_M`, wired to Pass 3 in Phase 4) and `BindlessTextureTable` mipmap feedback (`TEXTURE_STREAM_BUDGET_MB`, `2,048` to `4,096` default live slots, generational slots, immutable mip-chain `wgpu::Texture` swap, coalesced bindless `BindGroup` rebuild, atomic `min_lod` clamp, N+3 deferred texture drop, and `MAP_READ` feedback drain wired to Pass 8 in Phase 3; https://github.com/gfx-rs/wgpu/issues/8557).
      - Implement player-gravity-only fallback when Tier-0 ground collider is not yet resident.
 - **Verification Gate:**
   - Offline CLI compiles an animated multi-material glTF test scene and font into sector blobs (all meshlets `<= 64` verts and `<= 124` tris, 4+ LODs + HLOD, BC7/BC5 KTX2, MSDF atlas, versioned Rapier chunks).
@@ -115,17 +117,17 @@ dragon-engine/
 - **Spec Sections:** 3, 4, 6, 10, 16.
 - **Dependencies:** Phase 0, Phase 1.
 - **Deliverables:**
-  1. **Retained Scene & `RenderSnapshot` Evolution (`snapshot.rs`, `world.rs`, `save.rs`):**
-     - Replace per-frame 200 m CPU box collection with retained GPU scene handles plus per-frame dynamic deltas (camera mode, `history_reset` invalidation flag, previous-frame transforms for motion vectors, dynamic lights, skeleton poses, highlight IDs, viewmodel state, `EffectAttachment` parameters, `VisualStyle`, `GizmoBox`).
+  1. **Retained Scene & `RenderSnapshot` Evolution (`snapshot.rs`, `world.rs`, `save.rs`, `renderer.rs`):**
+     - Replace per-frame 200 m CPU box collection with retained GPU scene handles plus per-frame dynamic deltas (camera mode, `history_reset` invalidation flag, previous-frame transforms for motion vectors, dynamic lights, skeleton poses, highlight IDs, viewmodel state, `EffectAttachment` parameters, `VisualStyle`, `GizmoBox`). Drain retained-scene deltas and latch `history_reset` inside `Renderer::draw` before `surface.get_current_texture()` early returns so `Occluded`/`Outdated`/`Suboptimal`/`Lost` frames never drop GPU scene state.
      - Implement sector actor hibernation/restoration via `ActorCheckpoint` (including skeletal animation state) into an in-memory Sector Delta Store.
-  2. **Physics Refactor & Large-World Rebasing (`physics.rs`):**
-     - Remove full-world `Octree::rebuild` on dynamic moves; splice versioned pre-baked static sector colliders cleanly and use Rapier broadphase for dynamic actors.
-     - Maintain canonical CPU world coordinates in `DVec3` (or sector-origin + local `f32`) with active physics-origin rebasing so `f32` `rapier3d` remains precise across large seamless worlds.
+  2. **Physics Refactor & Large-World Rebasing (`physics.rs`, `world.rs`, `save.rs`):**
+     - Remove full-world `Octree::rebuild` on dynamic moves; back `SpatialQuery::query_octree` with Rapier's incremental broadphase/query pipeline and splice versioned pre-baked static sector colliders cleanly.
+     - Migrate canonical CPU world coordinates (`ActorSpawnDesc`, `PhysicsCommand`, `WorldReadView`, `CameraSnapshot`, `ActorCheckpoint`) to `DVec3` (or sector-origin + local `f32`) with active physics-origin rebasing so `f32` `rapier3d` remains precise across large seamless worlds.
   3. **Pass 1 Camera-Relative Reverse-Z & Dual Camera:**
      - Reverse-Z `Depth32Float` (`1.0` near, `0.0` far, `GreaterEqual`, clear `0.0`), camera-relative `f32` rebasing, First-Person (`0.05 m` to `2,000 m`) and Isometric (`10 m` to `80 m`) modes, Halton jitter toggle (on for Realistic temporal upscaling, zero for Comic).
   4. **Passes 4 and 5 (Two-Phase Hi-Z Culling, Thin Attribute Prepass & Far Sun Cascade):**
      - Phase 1 compute meshlet culler (frustum, backface cone, screen-error LOD, prev-frame Hi-Z skipped on `history_reset`, subgroup compaction, solid vs. alpha-test split, isometric camera-to-player capsule/cone wall cutout routing with hysteresis).
-     - Thin prepass writing internal-resolution reverse-Z `Depth32Float`, octahedral normals, roughness, motion vectors (`Rg16Float`), and `R16Uint` Object ID + highlight category via native mesh shaders or `MultiDrawIndirectCount` fallback (with separate alpha-test prepass draw list).
+     - Thin prepass writing internal-resolution reverse-Z `Depth32Float`, octahedral normals, roughness, rigid-body motion vectors (`Rg16Float`; extended to skinned limb motion vectors in Phase 4), and `R16Uint` Object ID + highlight category via native mesh shaders or `MultiDrawIndirectCount` fallback (with separate alpha-test prepass draw list).
      - Sun-frustum cull and `2048x2048` directional Far Sun Shadow Cascade raster pass for geometry beyond `TLAS_ACTIVE_RADIUS_M`.
      - Current-frame Hi-Z `min`-depth pyramid build and Phase 2 disoccluded meshlet pass.
 - **Verification Gate:**
@@ -142,7 +144,7 @@ dragon-engine/
   2. **Pass 8 (Opaque Clustered Forward Shading & Pluggable Custom `rust-gpu` Hooks):**
      - Zero-overdraw `Depth == Equal` pass (`depth_write_enabled = false`) sampling bindless PBR textures and writing mipmap feedback requests.
      - Dual runtime-selectable shader entry points: **Realistic PBR** (cluster lights, Skybox IBL, built-in material Fresnel rim, Pass 7 denoised ray buffer hooks) and **Flat Comic** (quantized cel bands, flat ambient, disabled SH/specular reflections, optional Fresnel rim).
-     - Evolve `crates/engine/src/effect.rs` (`RenderEffect`, `EffectRegistry`, `EngineRunner::run_with_effects`) from legacy CPU `SceneVertex` ranges to typed GPU-driven `rust-gpu` hook stages (Pass 8 opaque material/overlay hooks, Pass 10 transparent hooks, Pass 12 post-process hooks) reading `@group(0)` engine bindings and GPU instance `EffectAttachment` parameters.
+     - Evolve `crates/engine/src/effect.rs` (`RenderEffect`, `EffectRegistry`, `EngineRunner::run_with_effects`) from legacy CPU `SceneVertex` ranges to typed GPU-driven `rust-gpu` hook stages (Pass 8 opaque material/overlay hooks, Pass 10 transparent hooks, Pass 12 post-process hooks) reading `@group(0)` engine bindings and GPU instance `EffectAttachment` parameters, adding an engine-mediated shader-loading helper on `EffectInitContext` (backed by `gpu/device.rs`) so external effect crates load passthrough SPIR-V without `unsafe`.
      - Migrate `crates/fx_fresnel_rim` to the new GPU-driven `RenderEffect` hook contract as the reference custom shader plugin crate.
 - **Verification Gate:**
   - 4,096-light stress benchmark: Pass 6 within `0.10 to 0.40 ms` design reference on target desktop GPU, zero visible cluster boundary seams.
@@ -157,11 +159,11 @@ dragon-engine/
   2. **Pass 2 (Compute Meshlet Skinning + Skinned Motion Vectors):**
      - Upload compressed bone matrices to 12 MB triple-buffered storage pool.
      - Subgroup compute skinning writing Frame N deformed positions and normals into the skinned vertex pool while retaining previous-frame skinned positions (`36 to 72 MB` total) so Pass 4 emits accurate per-vertex motion vectors for animated limbs.
-  3. **Pass 3 (Dynamic BLAS Refit, Async Static `wgpu::Blas` Compaction & Active-Radius TLAS):**
+  3. **Pass 3 (Dynamic BLAS Update/Rebuild, Async Static `wgpu::Blas` Compaction & Active-Radius TLAS):**
      - GPU memory barrier from Pass 2 skinned vertex writes to acceleration structure reads.
-     - Refit dynamic character `wgpu::Blas` handles (`PreferUpdate`) from Frame N skinned vertices.
-     - Execute up to `STATIC_BLAS_BUILDS_PER_FRAME` queued static BLAS builds and drive the multi-frame async compaction state machine (`Blas::prepare_compaction_async` -> poll `ready_for_compaction()` -> `Queue::compact_blas` -> atomic TLAS swap -> N+3 drop of uncompacted `Blas`) within `BLAS_POOL_BUDGET_MB`.
-     - Rebuild single shared camera-relative TLAS for `RayReady` objects inside `TLAS_ACTIVE_RADIUS_M`, setting `instance_custom_index` to each object's `GpuInstance` index.
+     - Update active dynamic character `wgpu::Blas` handles (`ALLOW_UPDATE | PREFER_FAST_BUILD`, `PreferUpdate`) from Frame N skinned vertices (bounded by `MAX_DYNAMIC_BLAS_COUNT` while `wgpu 30.0.1` executes fast full rebuilds instead of refit: https://github.com/gfx-rs/wgpu/issues/6762).
+     - Execute up to `STATIC_BLAS_BUILDS_PER_FRAME` queued static BLAS builds and drive the multi-frame async compaction state machine (`Blas::prepare_compaction_async` -> poll `ready_for_compaction()` -> `Queue::compact_blas` -> atomic TLAS swap -> N+3 drop of uncompacted `Blas`) within `BLAS_POOL_BUDGET_MB` (CPU-estimated inside `BlasPool`).
+     - Rebuild single shared camera-relative TLAS for `RayReady` objects inside `TLAS_ACTIVE_RADIUS_M`, setting 24-bit `instance_custom_index` to each object's `GpuInstance` / submesh table index.
 - **Verification Gate:**
   - Animated character ray-hit validation confirming `0`-frame lag between rasterized limbs and BVH hits (zero bind-pose spawn flash) and clean limb motion vectors in Pass 4.
   - 100-character timing benchmark on target desktop GPU verifying Pass 2 skinning, dynamic BLAS refit, async static BLAS compaction, and TLAS rebuild.
@@ -174,9 +176,9 @@ dragon-engine/
      - Automatic cluster-light importance sampling (brightness/distance, zero artist shadow flags).
      - 1 to 4 stochastic `TERMINATE_ON_FIRST_HIT` rays per pixel against shared TLAS (with non-opaque any-hit alpha test for near-range foliage), blending seamlessly into Pass 4's `2048x2048` directional Far Sun Cascade beyond `TLAS_ACTIVE_RADIUS_M`.
   2. **Hit-Shaded Ray-Queried Glossy Reflections:**
-     - 1 stochastic GGX ray per pixel where `roughness < REFLECTION_ROUGHNESS_CUTOFF` (0.5x res on iGPU floor, 1.0x on discrete, disabled in Comic). On hit, resolve `instance_custom_index` -> geometry/skinned vertex slice + index buffer + `MaterialId` -> bindless albedo/ORM textures and evaluate hit-point lighting. Zero SSAO/GTAO passes.
+     - 1 stochastic GGX ray per pixel where `roughness < REFLECTION_ROUGHNESS_CUTOFF` (0.5x res on iGPU floor, 1.0x on discrete, disabled in Comic). On hit, resolve `(instance_custom_index, geometry_index)` through `GpuSubmeshDesc` -> flat BLAS geometry/skinned vertex slice + index slice + `MaterialId` -> bindless albedo/ORM textures and evaluate hit-point lighting. Zero SSAO/GTAO passes.
   3. **Hardware Ray-Queried Radiance Cascades:**
-     - Screen-space depth-anchored Cascade 0 (`1.5 m` to `2.0 m` short rays) transitioning to coarse 3D camera-centered clipmap higher cascades against the shared TLAS (zero 3D SDFs), using hit-point geometry/material lookup + previous-frame merged radiance cache for leak-free multi-bounce GI.
+     - Screen-space depth-anchored Cascade 0 (`1.5 m` to `2.0 m` short rays) transitioning to coarse 3D camera-centered clipmap higher cascades against the shared TLAS (zero 3D SDFs), using `(instance_custom_index, geometry_index)` hit-point lookup + previous-frame merged radiance cache for leak-free multi-bounce GI.
   4. **Dual-Mode Denoiser:**
      - Temporal-spatial A-Trous filter using Pass 4 motion vectors and `history_reset` in Realistic mode (`24 MB` history at 1080p); spatial-only normal/depth-guided filter in Comic mode (`0 MB` history).
 - **Verification Gate:**
@@ -188,13 +190,13 @@ dragon-engine/
 - **Dependencies:** Phase 3, Phase 5.
 - **Deliverables:**
   1. **Pass 9 (Sky Atmosphere & Opaque Height Fog):** Physical sky LUT (`4 MB`) + opaque height fog in Realistic mode; stylized flat gradient sky in Comic mode where reverse-Z depth == `0.0`.
-  2. **Pass 10 (Transparent Meshlet GPU Subgroup Radix Sort, Alpha Blend & Pluggable Overlay Hooks):** Camera-depth key generation, 3 to 4 dispatch back-to-front GPU subgroup radix sort (`1` to `4 MB`), single mesh-shader / `MultiDrawIndirectCount` hardware alpha blend pass evaluating clustered lights, skybox IBL, and per-fragment height fog directly, plus Pass-10 `RenderEffect` hooks.
-  3. **Pass 11 (First-Person Viewmodel & Debug Gizmo Pass):** Dedicated near reverse-Z sub-range for player hands and weapons with viewmodel motion vectors and clustered/IBL lighting, followed by `GizmoBox` debug overlays.
-  4. **Pass 12 (Pluggable `UpscalerBackend`, Tonemapping, Post Hooks, Object ID Highlights, MSDF Text & `UiOverlay`):**
+  2. **Pass 10 (Transparent Meshlet GPU Subgroup Radix Sort, Alpha Blend & Pluggable Overlay Hooks):** Camera-depth key generation, 3 to 4 dispatch back-to-front GPU subgroup radix sort (`1` to `4 MB`), single mesh-shader / `MultiDrawIndirectCount` hardware alpha blend pass evaluating clustered lights, skybox IBL, per-fragment height fog, and Pass 4 Far Sun Shadow Cascade lookup on cutout walls, plus Pass-10 `RenderEffect` hooks.
+  3. **Pass 11 (First-Person Viewmodel Pass):** Dedicated near reverse-Z sub-range for player hands and weapons updating viewmodel octahedral normals and motion vectors with clustered/IBL lighting.
+  4. **Pass 12 (Pluggable `UpscalerBackend`, Tonemapping, Post Hooks, Object ID Highlights, Debug Gizmos, MSDF Text & `UiOverlay`):**
      - **Default Linux-first `UpscalerBackend` (`TaauRcas`):** 100% `rust-gpu` temporal anti-aliasing upscaler with Halton jitter, `history_reset`, and RCAS sharpening + AgX tonemapping.
      - **Optional feature-gated `fsr-sdk` backend (`crates/engine/src/gpu/upscaler_fsr.rs`, Windows Vulkan/DX12):** Official AMD FSR SDK 2.4.0 (`FSR 4.1.2` with automatic Lite INT8 model selection + `FSR 3.1.6` fallback) via isolated `unsafe` `wgpu_hal` interop.
-     - Comic mode: zero temporal history/jitter + custom 3D color LUT + depth/octahedral-normal geometry ink outlines.
-     - Registered Pass-12 `RenderEffect` post-process hooks, post-upscale `R16Uint` Object ID edge detector + animated loot highlights, GPU MSDF text renderer (3D world signs + HUD hooks), and `UiOverlay::render`.
+     - Comic mode: zero temporal history/jitter (`0.0 MB`), spatial scaling (EASU/bilinear + RCAS when `INTERNAL_RENDER_SCALE < 1.0`, or native `1.0` scale) + custom 3D color LUT + depth/octahedral-normal geometry ink outlines.
+     - Registered Pass-12 `RenderEffect` post-process hooks, post-upscale `R16Uint` Object ID edge detector + animated loot highlights, post-tonemap `GizmoBox` debug overlays, GPU MSDF text renderer (3D world signs + HUD hooks), and `UiOverlay::render`.
 - **Verification Gate:**
   - Isometric concave L-wall cutout depth-order and hysteresis test (zero manual artist mesh splitting).
   - First-person flush-wall weapon anti-clip and temporal-ghosting check.
@@ -212,8 +214,8 @@ dragon-engine/
   2. **12-Pass GPU Timestamp Profiler (`crates/engine/src/gpu/profiler.rs`):**
      - Pass-level `wgpu::QuerySet` `timestamp_writes` (`Features::TIMESTAMP_QUERY`, avoiding Apple Silicon encoder-timestamp restrictions) across all 12 passes calibrated against the target discrete desktop GPU tier.
   3. **Cross-Backend DX12 & Metal Milestone:**
-     - Add offline SPIRV-Cross + DXC/MetalLib cross-compilation with `PassthroughShaderEntryPoint` reflection for DX12 and Metal builds.
-     - Add Metal-specific accommodations (dummy-padded bindless slots where `PARTIALLY_BOUND_BINDING_ARRAY` is absent; native mesh-shader draw path without `MULTI_DRAW_INDIRECT_COUNT`).
+     - Add offline SPIRV-Cross + DXC/MetalLib cross-compilation for `core_shader` and external `RenderEffect` crates with `PassthroughShaderEntryPoint` reflection, emitting one DXIL module per entry point to satisfy `wgpu-core 30.0.1`'s DXIL single-entry constraint (https://github.com/gfx-rs/wgpu/issues/9991).
+     - Add Metal-specific accommodations (native mesh-shader draw path without `MULTI_DRAW_INDIRECT_COUNT`, plus defensive 1x1 dummy bindless fallback views if an adapter lacks `PARTIALLY_BOUND_BINDING_ARRAY`).
   4. **Documentation Sync (`docs/engine-architecture.md`):**
      - Align runtime diagram and notes with the completed 12-pass renderer, pluggable `RenderEffect` hooks, and streaming subsystems.
 - **Verification Gate:**
@@ -230,10 +232,10 @@ After Phase 0 establishes GPU arenas, presets, and `shader_abi`, work runs in pa
 | Engineer | Ownership | Phases |
 | :--- | :--- | :--- |
 | **Engineer 1 (GPU Core & Geometry)** | `gpu/`, Reverse-Z, Two-Phase Hi-Z, Meshlet Culling, Thin Prepass, Far Sun Cascade, Transparent Radix Sort, Viewmodel | 0, 2, 6 (Passes 10, 11) |
-| **Engineer 2 (Ray Tracing & GI)** | Budgeted `wgpu::Blas` Pool & Async Compaction, Active-Radius TLAS, Ray Queries (Shadows, Hit-Shaded Reflections), Radiance Cascades, Denoiser | 4 (Pass 3), 5 (Pass 7) |
-| **Engineer 3 (Shading, Lighting, Upscaling & Effects)** | 3D Light Clustering, PBR/Comic Forward Shaders, GPU-Driven `RenderEffect` Hooks (`crates/fx_fresnel_rim`), Sky/Fog, `rust-gpu` TAAU+RCAS & Optional `fsr-sdk` Bridge, AgX/Comic LUT, Object ID Highlights | 3 (Passes 6, 8), 6 (Passes 9, 12) |
-| **Engineer 4 (Assets, Streaming, Skinning & Text)** | `crates/asset_pipeline`, `mmap` I/O Pool, Independent Residency Policies, Immutable-Swap Bindless Mip Streamer, Skeletal Eval & Compute Skinning, MSDF Text | 1, 4 (Pass 2), 6 (MSDF) |
-| **Engineer 5 (Runtime, Physics, Game, Cross-Backend & QA)** | Retained Scene / `RenderSnapshot`, `physics.rs` Sector Colliders & Origin Rebasing, Sector Actor Hibernation, `crates/game` Showcase, 12-Pass Profiler, DX12/Metal Cross-Backend Milestone | 0, 2, 7 |
+| **Engineer 2 (Ray Tracing & GI)** | Phase 0 `RayQuery` Spike & `BlasPool` ABI, Async Compaction, Active-Radius TLAS, Ray Queries (Shadows, Hit-Shaded Reflections), Radiance Cascades, Denoiser | 0, 4 (Pass 3), 5 (Pass 7) |
+| **Engineer 3 (Shading, Lighting, Upscaling & Effects)** | Phase 0 Bindless/Subgroup Spike & `shader_abi`, 3D Light Clustering, PBR/Comic Forward Shaders, GPU-Driven `RenderEffect` Hooks (`crates/fx_fresnel_rim`), Sky/Fog, `rust-gpu` TAAU+RCAS & Optional `fsr-sdk` Bridge, AgX/Comic LUT, Object ID Highlights, Post-Tonemap Gizmos | 0, 3 (Passes 6, 8), 6 (Passes 9, 12) |
+| **Engineer 4 (Assets, Streaming, Skinning & Text)** | Phase 0 Arena/Feedback Ring ABI, `crates/asset_pipeline`, `mmap` I/O Pool, Independent Residency Policies, `BindlessTextureTable` Mip Streamer, Skeletal Eval & Compute Skinning, MSDF Text | 0, 1, 4 (Pass 2), 6 (MSDF) |
+| **Engineer 5 (Runtime, Physics, Game, Cross-Backend & QA)** | Phase 0 Device Startup Contract, Retained Scene / Pre-Swapchain Delta Drain / `RenderSnapshot`, `physics.rs` Sector Colliders & `DVec3` Origin Rebasing, Sector Actor Hibernation, `crates/game` Showcase, 12-Pass Profiler, DX12/Metal Cross-Backend Milestone | 0, 2, 7 |
 
 ---
 
