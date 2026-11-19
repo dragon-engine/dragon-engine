@@ -53,6 +53,21 @@ impl Renderer<'_> {
         // inside a private `BlasPool` module until `wgpu` exposes BLAS memory queries:
         // https://github.com/gfx-rs/wgpu/issues/6762
         // https://github.com/gfx-rs/wgpu/pull/7285
+        //
+        // TODO(wgpu): `wgpu 30.0.1` `TlasInstance` exposes `transform`, 24-bit `custom_data`, and
+        // `mask: u8`, but omits per-instance geometry flags (`VkGeometryInstanceFlagBitsKHR` such as
+        // `FORCE_OPAQUE` / `FORCE_NO_OPAQUE` / `TRIANGLE_FACING_CULL_DISABLE`). Route near-range
+        // non-opaque alpha-tested foliage through a dedicated `TlasInstance::mask` bit and exclude
+        // foliage beyond `ALPHA_TEST_RT_RANGE_M` behind a TLAS-instance builder helper until upstream
+        // exposes instance flags:
+        // https://github.com/gfx-rs/wgpu/issues/6762
+        //
+        // TODO(wgpu): Track upstream TLAS upload/build separation and optimization, plus Metal
+        // BLAS->TLAS synchronization fixes before enabling the Phase 7 Metal ray-query milestone:
+        // https://github.com/gfx-rs/wgpu/issues/10450
+        // https://github.com/gfx-rs/wgpu/issues/9946
+        // https://github.com/gfx-rs/wgpu/issues/9215
+        // https://github.com/gfx-rs/wgpu/issues/9100
         let (device, queue) = pollster::block_on(
             adapter.request_device(
                 &wgpu::DeviceDescriptor {

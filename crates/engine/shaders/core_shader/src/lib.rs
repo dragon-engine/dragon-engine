@@ -6,6 +6,19 @@
 // `BindGroupLayoutEntry::count` behind one centralized texture-sampling helper:
 // https://github.com/gfx-rs/wgpu/issues/7347
 // https://github.com/gfx-rs/wgpu/issues/3637
+//
+// TODO(wgpu): `Features::SUBGROUP_BARRIER` is unsupported on DX12 in `wgpu 30.0.1` (Vulkan and
+// Metal only) while WebGPU subgroup barrier standardization remains open. Rely on
+// `Features::SUBGROUP` operations paired with workgroup barriers instead of `subgroup_barrier()`
+// so compute shaders remain portable across Phase 7 backends:
+// https://github.com/gfx-rs/wgpu/issues/5555
+// https://github.com/gpuweb/gpuweb/issues/4437
+//
+// TODO(wgpu): Pass 8 opaque forward shading writes mipmap feedback to a storage buffer, which
+// disables implicit early-Z on Vulkan/SPIR-V unless `EarlyFragmentTests` is enabled
+// (`Features::SHADER_EARLY_DEPTH_TEST` on Vulkan / `#[spirv(early_fragment_tests)]`, and
+// `[earlydepthstencil]` / `[[early_fragment_tests]]` when cross-compiling passthrough DXIL/MSL in
+// Phase 7). Keep Pass 8 entry points annotated so `Depth == Equal` preserves zero pixel overdraw.
 
 use shader_abi::SceneUniforms;
 use spirv_std::glam::{Mat4, Vec2, Vec3, Vec4};
