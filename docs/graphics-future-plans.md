@@ -16,12 +16,12 @@ Tier 1 establishes the offline Cluster-Group DAG builder, quantized `128 KB` clu
 
 Every future Tier 2 and Tier 3 change must preserve these non-negotiable Dragon Engine invariants:
 
-1. **Zero-Cost Optionality Preserved:** Scenes without virtualized assets (`vg_instance_count == 0`) or games opting out via `GraphicsSettings` / `VirtualGeometryMode::Disabled` must continue bypassing VG allocations (`0.0 MB`) and VG compute passes (`0.00 ms`).
+1. **Zero-Cost Optionality Preserved:** Scenes without virtualized assets (`vg_instance_count == 0`) or games opting out via `RuntimeGraphicsSettings` / `VirtualGeometryMode::Disabled` must continue bypassing VG allocations (`0.0 MB`) and VG compute passes (`0.00 ms`).
 2. **Strict `rust-gpu` Vulkan 1.4 SPIR-V Pipeline:** All new compute rasterizers, visibility-buffer resolvers, tile classifiers, and displacement shaders must compile through `rust-gpu` (`spirv-unknown-vulkan1.4`, zero WGSL, zero HLSL/Slang cross-compilers, 100% `crates/shader_abi` sharing).
 3. **Pure-Rust Runtime & Scoped `unsafe` Privacy:** All Vulkan handles remain private inside `crates/engine/src/gpu/`. Public `crates/engine` APIs, `crates/game`, and host `RenderEffect` crates keep `unsafe_code = "deny"`.
 4. **Dual-Style & Dual-Camera Compatibility:** Every tier must operate identically across First-Person (`[0.0, 0.95]` world / `[0.95, 1.0]` viewmodel depth partition) and Isometric (concave wall cutout transparency) cameras, and across both `Realistic` (TAAU + ReSTIR DI + Radiance Cascades) and `Comic` (zero temporal history, deterministic top-3 + sun visibility, depth/normal ink outlines) visual styles.
 5. **Frame-Pacing-First Async Streaming (Zero Loading Screens):** Page streaming, fallback-to-detail promotion, and coarse/cluster BLAS updates must never stall simulation or frame pacing.
-6. **Minimum Hardware Baseline Protection (Radeon 780M):** Tier 2 and Tier 3 features must expose explicit `GraphicsSettings` toggles and error-threshold clamps so integrated GPUs can stay on Tier-1 hardware meshlets or looser error targets without violating the 30 FPS / 720p floor.
+6. **Minimum Hardware Baseline Protection (Radeon 780M):** Tier 2 and Tier 3 features must expose explicit `RuntimeGraphicsSettings` toggles and error-threshold clamps so integrated GPUs can stay on Tier-1 hardware meshlets or looser error targets without violating the 30 FPS / 720p floor.
 
 ---
 
@@ -33,10 +33,10 @@ Every future Tier 2 and Tier 3 change must preserve these non-negotiable Dragon 
 | **Static Opaque Rasterizer** | Hardware meshlets (`VK_EXT_mesh_shader` / indirect) | Hybrid: Hardware (`> 8 px` clusters) + Compute SW Rasterizer (`<= 8 px` clusters) | Programmable HW/SW Rasterizer Bins (opaque, masked foliage, vertex-WPO) |
 | **Intermediate Geometry Buffer** | 9 B/sample Thin Prepass (`D32F`, Oct-Normals, `R8_UINT`, Motion) | 64-bit Visibility Buffer (`8 B/px`) -> Resolved to 9 B/sample Thin Prepass | 64-bit Visibility Buffer + per-bin programmable attributes -> Thin Prepass |
 | **Opaque Shading Architecture** | Pass 8 Clustered Forward (`Depth == Equal` meshlet replay) | Tile-Based Deferred Material Classification & Shading (analytic barycentric derivatives) | Unified Deferred Material Graph + Displaced/Skinned VisBuffer Shading |
-| **Pass 8 `RenderEffect` ABI** | Frozen `location 0..4` fragment hooks (unchanged) | **Breaking v2 ABI:** `VisSurface` deferred material hook contract (Tier-1 forward hooks kept for non-VG) | Unified programmable raster + `VisSurface` material hooks |
+| **Pass 8 `RenderEffect` ABI** | Frozen `location 0..5` fragment hooks (unchanged) | **Breaking v2 ABI:** `VisSurface` deferred material hook contract (Tier-1 forward hooks kept for non-VG) | Unified programmable raster + `VisSurface` material hooks |
 | **Ray Tracing BVH (Section 9)** | Coarse pre-baked RT fallback proxy BLAS in `BlasPool` | Coarse RT fallback proxy BLAS + ray-offset / shadow-terminator mitigation | Cross-vendor Hardware Cluster-BLAS (`KHR` standardized equivalent) |
 | **Skinned Characters & Foliage** | Standard Pass 2a skinning + Pass 3 BLAS refit + HW meshlets | Unchanged (non-VG path alongside Tier 2 static opaque) | Hierarchical Skinned Cluster DAGs / Assemblies + Masked SW/HW Bins |
-| **Estimated Effort (1 Engineer)** | 2 to 4 months (Phase 6b, with ABI reserved in Phase 0) | 6 to 12+ months post-Phase 7 | 18 to 36+ months (multi-subsystem research) |
+| **Estimated Effort (1 Engineer)** | 2 to 4 months (Phase 6b, with ABI reserved in Phase 0b) | 6 to 12+ months post-Phase 7 | 18 to 36+ months (multi-subsystem research) |
 
 ---
 
@@ -115,7 +115,7 @@ flowchart TD
      - **Material Tile Classification Compute Pass:** Scans `8x8` tiles of the Visibility Buffer, extracts each pixel's `MaterialId` / `EffectId`, compacts active material bitmasks via wave-portable subgroup ballot/compaction, and builds per-material tile indirect dispatch lists (or emits a 16-bit `material_id` depth buffer for hardware depth-equal fullscreen passes).
      - **Deferred Material Shading Dispatch:** Executes one clean, coherent shading pass per active material/effect over only the `8x8` tiles containing that material. Reconstructs `VisSurface` (world position, normal, tangent, UV, `dUV/dx`, `dUV/dy`, `instance_index`) from the Visibility Buffer, samples bindless albedo/ORM via `sample_grad`, writes Section 11 mipmap feedback using analytic `log2(max(|dUV/dx|, |dUV/dy|))` against stored full source dimensions, and evaluates the identical Realistic PBR (remodulating Pass 7 ReSTIR DI/Reflections/GI) or Flat Comic cel shading as Pass 8b.
    - **Pass 8 `RenderEffect` v2 ABI Migration:**
-     - Existing Tier-1 Pass 8 fragment-only hooks (`location 0..4` inter-stage interface) continue working for non-VG meshes (Pass 8b).
+     - Existing Tier-1 Pass 8 fragment-only hooks (`location 0..5` inter-stage interface) continue working for non-VG meshes (Pass 8b).
      - VG-compatible custom opaque materials migrate to a `RenderEffect` v2 **`VisSurface` compute/fragment contract** in `crates/shader_abi` where engine-generated prologue code decodes the Visibility Buffer into a `VisSurface` struct and passes it to the effect shader alongside frozen Set 1 `b0..b6` lighting buffers.
 
 6. **Section 9 Hardware Ray-Tracing Alignment:**
@@ -262,7 +262,7 @@ Tier 3 extends Tier 2 across four orthogonal, independently adoptable tracks (fo
 Do not start implementing Tier 2 or Tier 3 until every prerequisite gate below passes objectively:
 
 ### Gate A: Tier 1 -> Tier 2 Promotion Criteria
-1. All baseline phases (`Phase 0` through `Phase 7`) of [Graphics Implementation Plan](graphics-implementation-plan.md) pass with zero `VK_LAYER_KHRONOS_validation` / GPU-AV errors.
+1. All baseline phases (`Phase 0a` through `Phase 7`) of [Graphics Implementation Plan](graphics-implementation-plan.md) pass with zero `VK_LAYER_KHRONOS_validation` / GPU-AV errors.
 2. Offline QA Vulkan timestamp profiling on actual production art assets proves that Tier-1 hardware meshlets are bottlenecked by sub-pixel 2x2 quad overdraw (`Pass 4/5 Thin Prepass + Pass 8 > 4.0 ms` on `High` discrete desktop reference due to `< 2 px` triangles).
 3. The Section 4.5 `rust-gpu` prerequisite spike (`Int64Atomics` `OpAtomicUMax`, `<= 64 VGPR` SW rasterizer occupancy, and bindless `sample_by_gradient`) passes on real Linux + Windows Vulkan 1.4 hardware.
 4. `RenderEffect` v2 (`VisSurface`) contract is reviewed and approved for external shader crates (`crates/fx_fresnel_rim`).
