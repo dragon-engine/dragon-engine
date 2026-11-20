@@ -36,7 +36,7 @@ Every future Tier 2 and Tier 3 change must preserve these non-negotiable Dragon 
 | **Pass 8 `RenderEffect` ABI** | Frozen `location 0..4` fragment hooks (unchanged) | **Breaking v2 ABI:** `VisSurface` deferred material hook contract (Tier-1 forward hooks kept for non-VG) | Unified programmable raster + `VisSurface` material hooks |
 | **Ray Tracing BVH (Section 9)** | Coarse pre-baked RT fallback proxy BLAS in `BlasPool` | Coarse RT fallback proxy BLAS + ray-offset / shadow-terminator mitigation | Cross-vendor Hardware Cluster-BLAS (`KHR` standardized equivalent) |
 | **Skinned Characters & Foliage** | Standard Pass 2a skinning + Pass 3 BLAS refit + HW meshlets | Unchanged (non-VG path alongside Tier 2 static opaque) | Hierarchical Skinned Cluster DAGs / Assemblies + Masked SW/HW Bins |
-| **Estimated Effort (1 Engineer)** | 2 to 4 months (integrated in Phases 0 to 4) | 6 to 12+ months post-Phase 7 | 18 to 36+ months (multi-subsystem research) |
+| **Estimated Effort (1 Engineer)** | 2 to 4 months (Phase 6b, with ABI reserved in Phase 0) | 6 to 12+ months post-Phase 7 | 18 to 36+ months (multi-subsystem research) |
 
 ---
 
