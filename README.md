@@ -11,9 +11,9 @@
 ## Documentation
 
 - [Engine Architecture Principles](docs/engine-architecture.md): Core safety invariants, memory layout, dual executors, clocks, input pipeline, and UI abstraction.
-- [Graphics & Streaming Architecture](docs/graphics-architecture.md): Finalized 11-pass compute-centric clustered forward, optional Tier-1 Cluster-DAG virtual geometry, unified hardware ray-query, and zero-loading-screen streaming specifications.
+- [Graphics & Streaming Architecture](docs/graphics-architecture.md): Finalized 11-pass compute-centric clustered forward, optional Tier-1 Cluster-DAG virtual geometry, optional integrated compute weather, unified hardware ray-query, and zero-loading-screen streaming specifications.
 - [Graphics Implementation Plan](docs/graphics-implementation-plan.md): Phased execution roadmap, codebase readiness audit, verification gates, and progress tracker.
-- [Future Graphics Architecture Plans](docs/graphics-future-plans.md): Post-baseline roadmap for Virtual Geometry Tier 2 (64-bit Visibility Buffer + hybrid HW/SW rasterizer) and Tier 3 (programmable bins, runtime displacement, skinned cluster DAGs, cluster-level RT).
+- [Future Graphics Architecture Plans](docs/graphics-future-plans.md): Post-baseline roadmap for Virtual Geometry Tier 2 (64-bit Visibility Buffer + hybrid HW/SW rasterizer), Tier 3 (programmable bins, runtime displacement, skinned cluster DAGs, cluster-level RT), and Volumetric Weather (3D clouds, temporal froxel fog, GPU splash particles).
 - [Project Agent Rules](AGENTS.md): Mandatory reactive architecture and crate boundary rules.
 
 ## Build and Test

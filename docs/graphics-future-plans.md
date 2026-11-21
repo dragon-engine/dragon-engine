@@ -1,14 +1,15 @@
-# Future Graphics Architecture Plans: Virtual Geometry Tiers 2 and 3
+# Future Graphics Architecture Plans: Virtual Geometry Tiers 2 and 3 & Volumetric Weather
 
 ## 1. System Motivation and Scope
 
-This document defines the post-baseline roadmap for evolving Dragon Engine's optional **Tier-1 Cluster-DAG Virtual Geometry** (specified in [Graphics & Streaming Architecture](graphics-architecture.md) and scheduled in [Graphics Implementation Plan](graphics-implementation-plan.md)) into sub-pixel micro-polygon rendering (**Tier 2**) and full-spectrum virtualized geometry (**Tier 3**).
+This document defines the post-baseline roadmap for evolving Dragon Engine's optional **Tier-1 Cluster-DAG Virtual Geometry** and **Section 19 Integrated Compute Weather Pipeline** (specified in [Graphics & Streaming Architecture](graphics-architecture.md) and scheduled in [Graphics Implementation Plan](graphics-implementation-plan.md)) into sub-pixel micro-polygon rendering (**Tier 2**), full-spectrum virtualized geometry (**Tier 3**), and **Volumetric Weather** (3D clouds, froxel volumetric fog, and GPU splash collisions).
 
-Tier 1 establishes the offline Cluster-Group DAG builder, quantized `128 KB` cluster page streaming, GPU Cluster-BVH traversal, coarse ray-tracing fallback proxies, and zero-cost bypass (`0.00 ms` / `0.0 MB`) for scenes that do not use virtual geometry. Tier 1 intentionally retains hardware meshlet rasterization (`VK_EXT_mesh_shader` / `vkCmdDrawIndexedIndirectCount`) at a `2.0 to 4.0 px` screen-space error floor (`VG_ERROR_THRESHOLD_PX`) to avoid breaking Pass 8 Clustered Forward shading, the Pass 8 `RenderEffect` vertex-to-fragment ABI, and Radeon 780M iGPU frame budgets.
+Tier 1 establishes the offline Cluster-Group DAG builder, quantized `128 KB` cluster page streaming, GPU Cluster-BVH traversal, coarse ray-tracing fallback proxies, and zero-cost bypass (`0.00 ms` / `0.0 MB`) for scenes that do not use virtual geometry. Tier 1 intentionally retains hardware meshlet rasterization (`VK_EXT_mesh_shader` / `vkCmdDrawIndexedIndirectCount`) at a `2.0 to 4.0 px` screen-space error floor (`VG_ERROR_THRESHOLD_PX`) to avoid breaking Pass 8 Clustered Forward shading, the Pass 8 `RenderEffect` vertex-to-fragment ABI, and Radeon 780M iGPU frame budgets. Likewise, baseline Section 19 weather intentionally uses procedural 2D clouds, analytic height fog, and non-colliding GPU precipitation to preserve `<= 16.6 ms` `High` native budgets and zero-history Comic-mode parity.
 
 **Scope of this document:**
 - **Tier 2 (Proposed, Post-Phase 7):** 64-bit Visibility Buffer + hybrid hardware/software compute rasterization for static opaque micro-polygon geometry (`<= 1.0 px` target error), preserving Passes 6, 7, 9, 10, and 11 through a VisBuffer-to-ThinPrepass resolve pass.
 - **Tier 3 (Proposed, Long-Term Research / Next-Gen):** Programmable rasterizer bins (alpha-tested foliage and world-position offset), runtime micro-polygon displacement and tessellation, skinned/skeletal cluster DAGs and rigid assemblies, and cross-vendor hardware Cluster-BLAS ray tracing.
+- **Volumetric Weather (Proposed, Post-Phase 7):** 3D raymarched volumetric clouds, temporal 3D froxel volumetric fog, and GPU surface-collision splash particles layering non-breakingly on top of Section 19's `WeatherState` and Top-Down Precipitation Occlusion Map.
 
 ---
 
@@ -270,3 +271,50 @@ Do not start implementing Tier 2 or Tier 3 until every prerequisite gate below p
 ### Gate B: Tier 2 -> Tier 3 Promotion Criteria
 1. Tier 2 Visibility Buffer + Hybrid SW/HW Rasterizer achieves target frame budgets across both `Realistic` and `Comic` styles while preserving `0.00 ms` / `0.0 MB` optional bypass for non-VG scenes.
 2. Each Tier-3 track (3A Programmable Foliage/WPO, 3B Runtime Displacement, 3C Skinned Cluster DAGs, 3D Cross-Vendor Cluster-BLAS) is evaluated and scheduled independently based on measured game content bottlenecks and Vulkan `KHR` extension availability.
+
+---
+
+## 7. Post-Baseline Volumetric Weather (3D Volumetric Clouds, Froxel Volumetric Fog, and GPU Splash Particles)
+
+**Status:** Proposed (Post-Phase 7, High/Ultra Discrete Desktop Track)
+**Configuration Variables:** `[Runtime]` `WEATHER_VOLUMETRIC_CLOUDS_ENABLED`, `[Runtime]` `WEATHER_VOLUMETRIC_FOG_ENABLED`, `[Startup]` `WEATHER_FROXEL_GRID` (`160 x 90 x 64`), `[Runtime]` `WEATHER_SPLASH_PARTICLES_ENABLED`.
+
+### 7.1 Motivation and Compatibility with Baseline Section 19 Weather
+
+Baseline Section 19 weather (`docs/graphics-architecture.md`, Phase 6d) establishes the pure-data `WeatherState` in `RenderSnapshot`, `WeatherConstants` in `FrameConstants`, the camera-snapped `D16_UNORM` Top-Down Precipitation Occlusion Map, Thin-Prepass wetness/ripples/snow, foliage wind, procedural 2D clouds, analytic height fog, and cluster-lit GPU precipitation within the Radeon 780M (`33.3 ms`) and RTX 3060 / RX 6700 XT (`16.6 ms`) budgets.
+
+When higher-tier discrete GPUs (`Ultra` preset / RTX 4070+ class) have GPU and VRAM headroom to spare, three independently combinable volumetric weather tracks upgrade baseline Section 19 rendering with **zero changes to `GameApp`, `RenderSnapshot::weather`, or frozen `RenderEffect` ABIs**:
+
+### 7.2 Track W1: 3D Raymarched Volumetric Clouds and Projected Cloud Shadow Map
+- **Architectural Consequences:**
+  - Precomputes static tileable 3D Worley-Perlin cloud shape (`128^3` `R8G8B8A8_UNORM`, `8.0 MB`) and detail (`32^3` `R8G8B8A8_UNORM`, `0.13 MB`) noise textures once at startup (or lazily on first enable).
+  - Replaces Pass 9's procedural 2D cloud dome in Realistic mode with a quarter-resolution temporally reprojected 3D raymarching pass (`core_shader_shading`, honoring `history_reset`) that also renders a low-resolution (`512 x 512` `R16_SFLOAT`, `0.5 MB`) projected 2D cloud-shadow transmittance map for Pass 7 and Pass 10 sun lighting and feeds Pass 2b Skybox IBL scattering.
+  - **Comic Mode & `Low` Preset Policy:** Automatically bypassed (`0.00 ms` / `0.0 MB` history) in Comic mode (retaining Section 19 quantized 2D comic cloud bands and zero temporal history) and disabled by default on `Low`/`Medium` presets.
+- **Quantitative Metrics (Design-Time Reference):**
+  - Additional VRAM: `10.0 MB to 16.0 MB` (3D noise volumes + quarter-res temporal cloud ping-pong + `512^2` cloud shadow map).
+  - GPU time: `+1.20 ms to +2.20 ms` (`High` discrete desktop), `+2.50 ms to +4.00 ms` (`Low` Radeon 780M).
+
+### 7.3 Track W2: Temporal 3D Froxel Volumetric Fog (Localized Scattering and God-Rays)
+- **Architectural Consequences:**
+  - Inserts a compute froxel scattering and front-to-back transmittance integration pass (`160 x 90 x 64` exponential view-frustum `VK_FORMAT_R16G16B16A16_SFLOAT` ping-pong grid) between Pass 6/7 and Pass 8/9, sampling Pass 6 active 3D light clusters, Pass 4 Dual-Mode Far Sun Shadow Cascade (and optional sparse Pass 3 TLAS ray-queried sun/local visibility), and `WeatherState` density/height parameters.
+  - Pass 9 (opaque pixels, skipping `is_viewmodel == 1`) and Pass 10 (transparent surfaces and GPU precipitation) sample the integrated froxel volume via hardware trilinear filtering instead of evaluating analytic height fog alone, producing localized torch halos, cave mist, and crepuscular sun shafts.
+  - **Comic Mode & `Low` Preset Policy:** Disabled automatically in Comic mode (zero temporal history) and off by default on `Low`/`Medium` presets (falling back seamlessly to Section 19 analytic height fog).
+- **Quantitative Metrics (Design-Time Reference):**
+  - Additional VRAM: `14.0 MB to 24.0 MB` (temporal scattering ping-pong + integrated froxel volume).
+  - GPU time: `+0.90 ms to +1.80 ms` (`High` discrete desktop), `+1.80 ms to +3.20 ms` (`Low` Radeon 780M).
+
+### 7.4 Track W3: GPU Surface-Collision Splash Particles
+- **Architectural Consequences:**
+  - Extends Phase 6d's Pass 10 lazy GPU compute precipitation pipeline with an appendable splash ring buffer (`1.0 to 2.0 MB` SSBO) spawned whenever a rain particle crosses the `D16_UNORM` Top-Down Precipitation Occlusion Map height (or Pass 5 world depth buffer) within `20 m` of the camera.
+  - Emits short-lived expanding ground splash/mist quads rendered in the same Pass 10 precipitation indirect draw with zero CPU involvement.
+- **Quantitative Metrics (Design-Time Reference):**
+  - Additional VRAM: `1.0 MB to 2.0 MB` (lazy).
+  - GPU time: `+0.15 ms to +0.30 ms` (`High` discrete desktop).
+
+### 7.5 Gate C: Volumetric Weather Promotion Criteria
+1. Baseline `Phase 6d` and `Phase 7` pass with zero `VK_LAYER_KHRONOS_validation` / GPU-AV errors and verified Clear vs. Heavy Storm timings.
+2. Each volumetric track (`W1`, `W2`, `W3`) preserves `0.00 ms` / `0.0 MB` bypass when disabled, when `WeatherState::is_clear()`, or when `VisualStyle::Comic` is active, and keeps `Ultra` discrete desktop targets within `<= 16.6 ms` (`60+ FPS`) while leaving `Low`/`Medium` presets on Section 19 baseline weather.
+
+### 7.6 Reference Publications for Volumetric Weather
+- **Reference:** Schneider, A. and Vos, N. "The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn." ACM SIGGRAPH Courses, 2015.
+- **Reference:** Wronski, B. "Volumetric Fog: Unified Compute Shader-Based Solution to Atmospheric Scattering." ACM SIGGRAPH Courses, 2014.
